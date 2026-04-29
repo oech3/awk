@@ -367,7 +367,8 @@ impl<'a> Parser<'a> {
     #[tracing::instrument]
     fn parse_case(&mut self, lex: &mut Lexer<'a>) -> Result<Atom<'a>> {
         lex.expect(&Token::Case)?;
-        let value = self.parse_atom(lex)?;
+        let next = lex.expect_next()?;
+        let value = self.parse_atom(lex, next)?;
         lex.expect(&Token::Colon)?;
         match value {
             Atom::Variable(_) => Err(ParsingError::UnexpectedToken),
@@ -485,10 +486,16 @@ impl<'a> Parser<'a> {
             } else {
                 return Err(ParsingError::UnexpectedToken);
             }
-        } else if lex.peek_with(|t| matches!(t, Token::FunctionCall(_))) {
-            self.parse_function_call(lex)?
         } else {
-            Expr::leaf(self.parse_atom(lex)?)
+            let next = lex.expect_next()?;
+            if let Token::Identifier(name) = next
+                && lex.peek_is(&Token::OpenParent)
+            {
+                // TODO: use spans to check there is no space between ident, (.
+                self.parse_function_call(lex, name.qualify(self.namespace))?
+            } else {
+                Expr::leaf(self.parse_atom(lex, next)?)
+            }
         };
 
         while let Some(next) = lex.peek() {
@@ -592,12 +599,14 @@ impl<'a> Parser<'a> {
     }
 
     #[tracing::instrument]
-    fn parse_function_call(&mut self, lex: &mut Lexer<'a>) -> Result<Expr<'a>> {
-        let Token::FunctionCall(ident) = lex.expect_next()? else {
-            return Err(ParsingError::UnexpectedToken);
-        };
+    fn parse_function_call(
+        &mut self,
+        lex: &mut Lexer<'a>,
+        name: Identifier<'a>,
+    ) -> Result<Expr<'a>> {
+        lex.expect(&Token::OpenParent)?;
         let expr = ExprNode::FunctionCall(
-            ident.qualify(self.namespace),
+            name,
             self.parse_arguments(lex, |t| t == &Token::ClosedParent)?,
         );
         lex.expect(&Token::ClosedParent)?;
@@ -605,12 +614,14 @@ impl<'a> Parser<'a> {
     }
 
     #[tracing::instrument]
-    fn parse_atom(&self, lex: &mut Lexer<'a>) -> Result<Atom<'a>> {
-        match lex.expect_next()? {
+    fn parse_atom(&self, lex: &mut Lexer<'a>, token: Token<'a>) -> Result<Atom<'a>> {
+        match token {
             Token::Number(n) => Ok(Atom::Number(n)),
             Token::String(s) => Ok(Atom::String(s)),
             Token::Regex(r) => Ok(Atom::Regex(r)),
-            Token::Identifier(a) => Ok(Atom::Variable(a.qualify(self.namespace).into())),
+            Token::Identifier(a) if !lex.peek_is(&Token::OpenParent) => {
+                Ok(Atom::Variable(a.qualify(self.namespace).into()))
+            }
             Token::NrVariable => Ok(Variable::Nr.into()),
             Token::NfVariable => Ok(Variable::Nf.into()),
             Token::FsVariable => Ok(Variable::Fs.into()),

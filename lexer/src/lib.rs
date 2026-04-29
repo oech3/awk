@@ -120,9 +120,6 @@ pub enum Token<'a> {
     #[regex("(?&identifier)", Identifier::without_namespace)]
     #[regex(r"(?&identifier)::(?&identifier)", Identifier::with_namespace)]
     Identifier(Identifier<'a>),
-    #[regex(r"(?&identifier)\(", Identifier::without_namespace)]
-    #[regex(r"(?&identifier)::(?&identifier)\(", Identifier::with_namespace)]
-    FunctionCall(Identifier<'a>),
     #[token("+", accept_expression)]
     Plus,
     #[token("-", accept_expression)]
@@ -231,7 +228,7 @@ pub enum LexingError {
     UnexpectedEof,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Identifier<'a> {
     pub namespace: Option<&'a str>,
     pub literal: &'a str,
