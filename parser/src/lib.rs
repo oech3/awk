@@ -95,6 +95,7 @@ impl<'a> Parser<'a> {
                         });
                     }
                     Right(special_pattern) => {
+                        lex.next();
                         let body = self.parse_body(lex)?;
                         match special_pattern {
                             SpecialPattern::Begin => &mut self.ast.begin,
