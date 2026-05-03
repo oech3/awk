@@ -4,7 +4,24 @@ This is a human, WIP, and clean implementation of an AWK interpreter, written in
 
 ## State of the Repo
 
-The lexer is pretty much done; however, it should track the span of the tokens so we can produce contextual error messages in the parser, and it is also lacking a POSIX-compatibility mode (trivial). The parser is mostly done, although it probably has some rough edges, and the preprocessor is TBD; also, the Pratt routine is a bit spaghetti and should be refactored (trivial). The interpreter is also TBD; work on it will be started once we get good testing on the parser. Expect this to be a fast-paced repo.
+### Lexer
+
+Pretty much done; lacking a POSIX-compatibility mode (trivial) and arena integration (trivial).
+
+### Parser
+
+Also mostly done; some bullet points:
+
+* Rough edges around error handling on expected tokens.
+* Preprocessor is TBD.
+* The Pratt routine is a bit spaghetti and should be refactored (trivial).
+* Missing getline expressions and command redirections (trivial).
+* We are working on test coverage and fuzzing.
+* It would be nice to reduce LOC; maybe we get rid of S-expr debug output.
+
+### Interpreter
+
+TBD; work on it will be started once we get good testing on the parser. Ideally, the design should be a bytecode machine or a JIT. Expect this to be a fast-paced repo.
 
 ## Contributing
 
