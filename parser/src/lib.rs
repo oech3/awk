@@ -460,6 +460,7 @@ impl<'a> Parser<'a> {
     fn parse_function(&mut self, lex: &mut Lexer<'a>) -> Result<()> {
         let name = lex.expect_identifier()?.qualify(self.namespace);
         let args = self.parse_signature(lex, &name)?;
+        lex.consume(&Token::Newline);
         let body = self.parse_body(lex)?;
 
         self.ast.functions.insert(name, Function { args, body });
