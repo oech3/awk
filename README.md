@@ -14,10 +14,10 @@ Also mostly done; some bullet points:
 
 * Rough edges around error handling on expected tokens.
 * Preprocessor is TBD.
-* The Pratt routine is a bit spaghetti and should be refactored (trivial).
-* Missing getline expressions and command redirections (trivial).
+* Missing command redirections.
 * We are working on test coverage and fuzzing.
 * It would be nice to reduce LOC; maybe we get rid of S-expr debug output.
+  * It's possible we move to the `chumsky` crate for this reason and Ariadne support. I currently think it's not necessary tho.
 
 ### Interpreter
 
