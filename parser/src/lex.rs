@@ -148,6 +148,10 @@ impl<'a> Lexer<'a> {
             token
         })
     }
+
+    pub fn is_yuxtaposed(&mut self) -> bool {
+        self.peeked_span().is_ok_and(|x| x.start == self.span.end)
+    }
 }
 
 impl<'a> Iterator for Lexer<'a> {

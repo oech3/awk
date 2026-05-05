@@ -8,6 +8,7 @@ mod ast;
 mod diagnostics;
 mod idempotency;
 mod lex;
+mod pratt;
 mod sexpr;
 #[cfg(test)]
 mod tests;
@@ -23,12 +24,12 @@ pub use crate::ast::Ast;
 pub use crate::lex::Lexer;
 use crate::{
     ast::{
-        Atom, BinaryOperator, BindingPower, Body, Command, Expr, ExprNode, Function, Getline,
-        Identifier, Pattern, PlaceOperator, Rule, RulePattern, SpecialPattern, Statement, Ternary,
-        UnaryOperator, Variable,
+        Atom, Body, Command, Expr, ExprNode, Function, Identifier, Pattern, PlaceOperator, Rule,
+        RulePattern, SpecialPattern, Statement, Variable,
     },
     diagnostics::{ParsingError, report_error},
     lex::TokenExt,
+    pratt::Pratt,
 };
 
 type Result<T, E = ParsingError> = std::result::Result<T, E>;
@@ -513,164 +514,7 @@ impl<'a> Parser<'a> {
 
     #[tracing::instrument]
     fn parse_expression(&mut self, lex: &mut Lexer<'a>) -> Result<Expr<'a>> {
-        self.parse_pratt_fragment(lex, 0)
-    }
-
-    #[tracing::instrument]
-    fn parse_pratt_fragment(&mut self, lex: &mut Lexer<'a>, min_bp: u8) -> Result<Expr<'a>> {
-        // TODO: getline expressions https://www.gnu.org/software/gawk/manual/html_node/Getline_002fVariable.html
-        let mut lhs = if lex.consume(&Token::OpenParent) {
-            let inner = self.parse_expression(lex)?;
-
-            lex.expect(
-                &Token::ClosedParent,
-                ParsingError::UnclosedParenthesisExpression,
-            )?;
-            inner
-        } else if lex.peek_with(Token::is_prefix_op) {
-            let next = lex.expect_next()?;
-            if let Some((op, bp)) = BinaryOperator::unfold_prefix(&next) {
-                let Expr::Leaf(Atom::Variable(rhs)) = self.parse_pratt_fragment(lex, bp)? else {
-                    return Err(ParsingError::OperatorExpectsVariable(lex.span()));
-                };
-                Expr::node(
-                    PlaceOperator::Assignment.expr(
-                        rhs,
-                        Expr::node(op.expr(Expr::leaf(rhs), Expr::leaf(1.)), self.arena),
-                    ),
-                    self.arena,
-                )
-            } else if let Ok(op) = UnaryOperator::parse(&next, &lex.peeked_span()?) {
-                let rhs = self.parse_pratt_fragment(lex, op.binding_power())?;
-
-                Expr::node(op.expr(rhs), self.arena)
-            } else {
-                return Err(ParsingError::InvalidExpression(lex.span()));
-            }
-        } else if lex.consume(&Token::Getline) {
-            // Consumes with maximum precedence the following ident and/or
-            // redirection reading from file.
-            // let var = self.get_place(lex, lex)
-            let var = if lex.peek_with(Token::is_place) {
-                let next = lex.expect_next()?;
-                self.get_place(lex, next)
-            } else {
-                None
-            };
-            if lex.consume(&Token::LesserThan) {
-                Expr::node(
-                    Getline::FromFile(var, self.parse_expression(lex)?),
-                    self.arena,
-                )
-            } else {
-                Expr::node(Getline::FromInput(var), self.arena)
-            }
-        } else {
-            let next = lex.expect_next()?;
-            if let Token::Identifier(name) = next
-                && lex.peek_is(&Token::OpenParent)
-            {
-                // TODO: use spans to check there is no space between ident, (.
-                self.parse_function_call(lex, name.qualify(self.namespace), lex.span())?
-            } else {
-                Expr::leaf(self.parse_atom(lex, next)?)
-            }
-        };
-
-        while let Some((next, span)) = lex.peek_with_span() {
-            let next = next?;
-
-            if let Ok(op) = BinaryOperator::parse(next, &span)
-                && !matches!(next, Token::Increment | Token::Decrement)
-            {
-                let (left_bp, right_bp) = op.binding_power();
-
-                if left_bp < min_bp {
-                    break;
-                }
-                lex.consume_with(|_| op != BinaryOperator::Concat);
-
-                let rhs = self.parse_pratt_fragment(lex, right_bp)?;
-                lhs = Expr::node(op.expr(lhs, rhs), self.arena);
-            } else if let Ok(op) = PlaceOperator::parse(next, &span) {
-                let (left_bp, right_bp) = op.binding_power();
-                let Expr::Leaf(Atom::Variable(var)) = lhs.take() else {
-                    return Err(ParsingError::OperatorExpectsVariable(lex.span()));
-                };
-
-                if left_bp < min_bp {
-                    break;
-                }
-                let token_op = lex.expect_next()?;
-
-                let mut rhs = self.parse_pratt_fragment(lex, right_bp)?;
-                if let Some(op) = BinaryOperator::unfold(&token_op) {
-                    rhs = Expr::node(op.expr(Expr::leaf(var), rhs), self.arena);
-                } else if op == PlaceOperator::ArrayAccess {
-                    while lex.consume(&Token::Comma) {
-                        rhs = Expr::node(
-                            BinaryOperator::Concat.expr(
-                                rhs,
-                                Expr::node(
-                                    BinaryOperator::Concat.expr(
-                                        Expr::leaf(Variable::Subsep),
-                                        self.parse_expression(lex)?,
-                                    ),
-                                    self.arena,
-                                ),
-                            ),
-                            self.arena,
-                        );
-                    }
-                    lex.expect(&Token::ClosedBracket, ParsingError::UnclosedArrayAccess)?;
-                }
-                lhs = Expr::node(op.expr(var, rhs), self.arena);
-            } else if next == &Token::QuestionMark {
-                let (left_bp, right_bp) = Ternary.binding_power();
-                if left_bp < min_bp {
-                    break;
-                }
-                lex.next();
-                let then_branch = self.parse_pratt_fragment(lex, right_bp)?;
-                lex.expect(&Token::Colon, ParsingError::MissingTernaryOr)?;
-                let else_branch = self.parse_pratt_fragment(lex, right_bp)?;
-                lhs = Expr::node(ExprNode::Ternary(lhs, then_branch, else_branch), self.arena);
-            } else if let Some((operation, reciprocal, bp)) = BinaryOperator::unfold_suffix(next) {
-                let Expr::Leaf(Atom::Variable(rhs)) = lhs else {
-                    return Err(ParsingError::OperatorExpectsVariable(lex.span()));
-                };
-                if bp < min_bp {
-                    break;
-                }
-                lex.next();
-                lhs = Expr::node(
-                    reciprocal.expr(
-                        Expr::node(
-                            PlaceOperator::Assignment.expr(
-                                rhs,
-                                Expr::node(
-                                    operation.expr(Expr::leaf(rhs), Expr::leaf(1.)),
-                                    self.arena,
-                                ),
-                            ),
-                            self.arena,
-                        ),
-                        Expr::leaf(1.),
-                    ),
-                    self.arena,
-                );
-            } else if matches!(next, Token::Pipe | Token::DoublePipe) {
-                lex.expect(&Token::Getline, |span| {
-                    ParsingError::UnexpectedToken(
-                        span,
-                        "operand must precede `getline` in an expression.".into(),
-                    )
-                })?;
-            } else {
-                break;
-            }
-        }
-        Ok(lhs)
+        Pratt::parse(self, lex)
     }
 
     #[tracing::instrument]
@@ -724,7 +568,7 @@ impl<'a> Parser<'a> {
     #[tracing::instrument]
     fn get_place(&self, lex: &mut Lexer<'a>, token: Token<'a>) -> Option<Variable<'a>> {
         match token {
-            Token::Identifier(a) if !lex.peek_is(&Token::OpenParent) => {
+            Token::Identifier(a) if !(lex.peek_is(&Token::OpenParent) && lex.is_yuxtaposed()) => {
                 Some(a.qualify(self.namespace).into())
             }
             Token::NrVariable => Some(Variable::Nr),

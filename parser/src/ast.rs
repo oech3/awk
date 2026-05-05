@@ -140,14 +140,16 @@ pub enum PlaceOperator {
 /// GNU docs: https://www.gnu.org/software/gawk/manual/html_node/Redirection.html
 #[derive(Debug, Clone)]
 pub enum Redirection<'a> {
-    Pipe(&'a str),
-    Write(&'a str),
-    Append(&'a str),
-    /// GNU Extension.
-    WriteCoprocess(&'a [u8]),
-    /// GNU Extension; only on `getline`.
-    ReadCoprocess(&'a [u8]),
-    WriteVariable(),
+    Write(WriteKind, Slice<'a>),
+    WriteFile(&'a str),
+    AppendFile(&'a str),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum WriteKind {
+    Pipe,
+    /// GNU Extension, `|&`.
+    Coprocess,
 }
 
 #[derive(Debug, Clone)]
@@ -337,6 +339,23 @@ impl<'a> PlaceOperator {
                 span.clone(),
                 "expected a place operator.".into(),
             )),
+        }
+    }
+}
+
+impl WriteKind {
+    pub fn parse(value: &Token) -> Option<Self> {
+        match value {
+            Token::Pipe => Some(Self::Pipe),
+            Token::DoublePipe => Some(Self::Coprocess),
+            _ => None,
+        }
+    }
+
+    pub fn expr_getline<'a>(self, var: Option<Variable<'a>>, expr: Expr<'a>) -> Getline<'a> {
+        match self {
+            Self::Pipe => Getline::PipeOut(var, expr),
+            Self::Coprocess => Getline::CoprocessOut(var, expr),
         }
     }
 }
