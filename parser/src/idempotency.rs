@@ -4,8 +4,8 @@ use crate::{
     Ast, Function,
     ast::{
         Atom, BinaryOperator, BinaryPlaceOperator, BindingPower, Body, Command, Expr, ExprNode,
-        Getline, Place, Rule, RulePattern, SimpleStatement, Statement, Ternary, UnaryOperator,
-        UnaryPlaceOperator, Variable,
+        Getline, Place, Redirection, Rule, RulePattern, SimpleStatement, Statement, Ternary,
+        UnaryOperator, UnaryPlaceOperator, Variable,
     },
 };
 
@@ -184,14 +184,20 @@ impl Display for SimpleStatement<'_> {
             SimpleStatement::Command {
                 name,
                 args,
-                redirection,
+                redirection: Some((rx, expr)),
+            } => {
+                write!(f, "{name}(")?;
+                write_args(f, args, indent)?;
+                write!(f, "){rx}{expr}")?;
+                Ok(())
+            }
+            SimpleStatement::Command {
+                name,
+                args,
+                redirection: None,
             } => {
                 write!(f, "{name} ")?;
-                write_args(f, args, indent)?;
-                if let Some(_redir) = redirection {
-                    write!(f, "TODO")?;
-                }
-                Ok(())
+                write_args(f, args, indent)
             }
             SimpleStatement::Delete(array, Some(index)) => write!(f, "delete {array}[{index}]"),
             SimpleStatement::Delete(array, None) => write!(f, "delete {array}"),
@@ -393,6 +399,17 @@ impl Display for Command {
         match self {
             Self::Print => write!(f, "print"),
             Self::Printf => write!(f, "printf"),
+        }
+    }
+}
+
+impl Display for Redirection {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        match self {
+            Self::WriteFile => write!(f, " > "),
+            Self::AppendFile => write!(f, " >> "),
+            Self::PipeIn => write!(f, " | "),
+            Self::CoprocessIn => write!(f, " |& "),
         }
     }
 }

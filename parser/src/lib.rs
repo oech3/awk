@@ -25,7 +25,7 @@ pub use crate::lex::Lexer;
 use crate::{
     ast::{
         Atom, BinaryPlaceOperator, Body, Command, Expr, ExprNode, Function, Identifier, Pattern,
-        Rule, RulePattern, SimpleStatement, SpecialPattern, Statement, Variable,
+        Redirection, Rule, RulePattern, SimpleStatement, SpecialPattern, Statement, Variable,
     },
     diagnostics::{ParsingError, report_error},
     lex::TokenExt,
@@ -467,41 +467,31 @@ impl<'a> Parser<'a> {
     }
 
     #[tracing::instrument]
-    fn parse_command(
-        &mut self,
-        lex: &mut Lexer<'a>,
-        command: Command,
-    ) -> Result<SimpleStatement<'a>> {
+    fn parse_command(&mut self, lex: &mut Lexer<'a>, name: Command) -> Result<SimpleStatement<'a>> {
         let parent = lex.consume(&Token::OpenParent);
-        let command = SimpleStatement::Command {
-            name: command,
-            args: self.parse_arguments(lex, |t| {
-                if parent {
-                    t == &Token::ClosedParent
-                } else {
-                    t.is_stmnt_end() || t == &Token::ClosedBrace
-                }
-            })?,
-            redirection: None,
-        };
-        if parent {
+        let args = if parent {
+            let expr = self.parse_function_args(lex)?;
             lex.expect(
                 &Token::ClosedParent,
                 ParsingError::UnclosedParenthesisInStatement,
             )?;
-        }
-        Ok(command)
+            expr
+        } else {
+            self.parse_command_args(lex)?
+        };
+        let redirection = self.parse_command_redirection(lex)?;
+        Ok(SimpleStatement::Command {
+            name,
+            args,
+            redirection,
+        })
     }
 
     /// Parses arguments to command or function calls; consumes to the end of
     /// the argument list or short-circuits with `delimiter` if empty.
-    fn parse_arguments(
-        &mut self,
-        lex: &mut Lexer<'a>,
-        delimiter: impl Fn(&Token<'a>) -> bool,
-    ) -> Result<Vec<'a, Expr<'a>>> {
+    fn parse_function_args(&mut self, lex: &mut Lexer<'a>) -> Result<Vec<'a, Expr<'a>>> {
         let mut arguments = Vec::new_in(self.arena);
-        if lex.peek_with(&delimiter) {
+        if lex.peek_is(&Token::ClosedParent) {
             return Ok(arguments);
         }
 
@@ -510,6 +500,37 @@ impl<'a> Parser<'a> {
             arguments.push(self.parse_expression(lex)?);
         }
         Ok(arguments)
+    }
+
+    fn parse_command_args(&mut self, lex: &mut Lexer<'a>) -> Result<Vec<'a, Expr<'a>>> {
+        let mut arguments = Vec::new_in(self.arena);
+        let mut pratt = Pratt::new(self);
+        if !lex.peek_with(Token::is_expr_start) {
+            return Ok(arguments);
+        }
+
+        arguments.push(pratt.parse_command_argument(lex)?);
+        while lex.consume(&Token::Comma) {
+            arguments.push(pratt.parse_command_argument(lex)?);
+        }
+        Ok(arguments)
+    }
+
+    fn parse_command_redirection(
+        &mut self,
+        lex: &mut Lexer<'a>,
+    ) -> Result<Option<(Redirection, Expr<'a>)>> {
+        if let Some(Ok(token)) = lex.peek()
+            && let Some(redirection) = Redirection::parse(token)
+        {
+            lex.next();
+            Ok(Some((
+                redirection,
+                Pratt::new(self).parse_redirection(lex)?,
+            )))
+        } else {
+            Ok(None)
+        }
     }
 
     fn parse_delete(&mut self, lex: &mut Lexer<'a>) -> Result<SimpleStatement<'a>> {
@@ -602,10 +623,7 @@ impl<'a> Parser<'a> {
         if lex.span().start != span.end {
             return Err(ParsingError::FunctionCallSeparatedIdent(span));
         }
-        let expr = ExprNode::FunctionCall(
-            name,
-            self.parse_arguments(lex, |t| t == &Token::ClosedParent)?,
-        );
+        let expr = ExprNode::FunctionCall(name, self.parse_function_args(lex)?);
         lex.expect(&Token::ClosedParent, |s| {
             ParsingError::FunctionCallMissingParenthesis(s, name.to_string())
         })?;

@@ -3,8 +3,8 @@ use lexer::Token;
 use crate::{
     IdentifierExt, Lexer, Parser, Result,
     ast::{
-        BinaryOperator, BinaryPlaceOperator, BindingPower, Expr, ExprNode, Getline, Place, Ternary,
-        UnaryOperator, UnaryPlaceOperator, Variable, WriteKind,
+        BinaryOperator, BinaryPlaceOperator, BindingPower, Expr, ExprNode, Getline, Place,
+        Redirection, Ternary, UnaryOperator, UnaryPlaceOperator, Variable, WriteKind,
     },
     diagnostics::ParsingError,
     lex::TokenExt,
@@ -23,6 +23,11 @@ impl<'a, 'b> Pratt<'a, 'b> {
         self.parse_expression(lex, 0)
     }
 
+    pub fn parse_command_argument(&mut self, lex: &mut Lexer<'a>) -> Result<Expr<'a>> {
+        let lhs = self.parse_lhs(lex)?;
+        self.fold_rhs(lex, lhs, 0, |t| Redirection::parse(t).is_some())
+    }
+
     fn parse_lhs(&mut self, lex: &mut Lexer<'a>) -> Result<Expr<'a>> {
         if lex.consume(&Token::OpenParent) {
             self.parse_parenthesized(lex)
@@ -37,12 +42,21 @@ impl<'a, 'b> Pratt<'a, 'b> {
 
     fn parse_expression(&mut self, lex: &mut Lexer<'a>, min_bp: u8) -> Result<Expr<'a>> {
         let lhs = self.parse_lhs(lex)?;
-        self.fold_rhs(lex, lhs, min_bp)
+        self.fold_rhs(lex, lhs, min_bp, |_| false)
     }
 
-    fn fold_rhs(&mut self, lex: &mut Lexer<'a>, mut lhs: Expr<'a>, min_bp: u8) -> Result<Expr<'a>> {
+    fn fold_rhs(
+        &mut self,
+        lex: &mut Lexer<'a>,
+        mut lhs: Expr<'a>,
+        min_bp: u8,
+        delimiter: impl Fn(&Token<'a>) -> bool,
+    ) -> Result<Expr<'a>> {
         while let Some((next, span)) = lex.peek_with_span() {
             let next = next?;
+            if delimiter(next) {
+                break;
+            }
             lhs = if let Ok(op) = UnaryPlaceOperator::parse_suffix(next, &span) {
                 if op.binding_power() < min_bp {
                     break;
@@ -81,7 +95,7 @@ impl<'a, 'b> Pratt<'a, 'b> {
     }
 
     fn parse_parenthesized(&mut self, lex: &mut Lexer<'a>) -> Result<Expr<'a>> {
-        let inner = self.parse_expression(lex, 0);
+        let inner = self.parse(lex);
         lex.expect(
             &Token::ClosedParent,
             ParsingError::UnclosedParenthesisExpression,
@@ -110,7 +124,7 @@ impl<'a, 'b> Pratt<'a, 'b> {
         // redirection reading from file.
         let place = if lex.peek_with(Token::is_place) {
             Some(Place::promote_from(
-                self.parse_expression(lex, BinaryOperator::Concat.binding_power().1)?,
+                self.parse_redirection(lex)?,
                 lex.span(),
             ))
         } else {
@@ -184,8 +198,7 @@ impl<'a, 'b> Pratt<'a, 'b> {
                 BinaryOperator::Concat.expr(
                     rhs,
                     Expr::node(
-                        BinaryOperator::Concat
-                            .expr(Expr::leaf(Variable::Subsep), self.parse_expression(lex, 0)?),
+                        BinaryOperator::Concat.expr(Expr::leaf(Variable::Subsep), self.parse(lex)?),
                         self.parser.arena,
                     ),
                 ),
@@ -224,7 +237,7 @@ impl<'a, 'b> Pratt<'a, 'b> {
 
         let pipe = |place| Expr::node(op.expr_getline(place, lhs), self.parser.arena);
         if lex.peek_with(Token::is_place) {
-            let expr = self.parse_expression(lex, BinaryOperator::Concat.binding_power().1)?;
+            let expr = self.parse_redirection(lex)?;
             match Place::promote_from(expr, lex.span()) {
                 Ok(place) => Ok(pipe(Some(place))),
                 Err((expr, _)) => Ok(Expr::node(
@@ -235,5 +248,9 @@ impl<'a, 'b> Pratt<'a, 'b> {
         } else {
             Ok(pipe(None))
         }
+    }
+
+    pub fn parse_redirection(&mut self, lex: &mut Lexer<'a>) -> Result<Expr<'a>> {
+        self.parse_expression(lex, BinaryOperator::Concat.binding_power().1 - 1)
     }
 }

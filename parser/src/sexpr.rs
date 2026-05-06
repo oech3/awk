@@ -5,7 +5,9 @@
 
 use std::fmt::{Debug, Display, Formatter, Result};
 
-use crate::ast::{Atom, Body, Identifier, Place, SimpleStatement, Statement, Variable};
+use crate::ast::{
+    Atom, Body, Identifier, Place, Redirection, SimpleStatement, Statement, Variable,
+};
 
 const PRETTY_PRINT_INDENT: usize = 2;
 
@@ -156,22 +158,27 @@ impl Debug for SimpleStatement<'_> {
             Self::Command {
                 name,
                 args,
-                redirection,
+                redirection: Some((rx, expr)),
             } => {
-                if let Some(rx) = redirection {
-                    if alt {
-                        write!(
-                            f,
-                            "(redir {rx:?}\n{pad}({name:?}{:#ni$?}))",
-                            ListLispFmt(args),
-                        )
-                    } else {
-                        write!(f, "(redir {rx:?} ({name:?}{:?}))", ListLispFmt(args))
-                    }
+                if alt {
+                    write!(
+                        f,
+                        "({name:?}{:#width$?}\n{pad}({rx:?} {expr:?}))",
+                        ListLispFmt(args),
+                        width = ni - PRETTY_PRINT_INDENT
+                    )
                 } else {
-                    write!(f, "({name:?}{:?})", ListLispFmt(args))
+                    write!(f, "({name:?}{:?} ({rx:?} {expr:?}))", ListLispFmt(args))
                 }
             }
+            Self::Command {
+                name,
+                args,
+                redirection: None,
+            } => {
+                write!(f, "({name:?}{:?})", ListLispFmt(args))
+            }
+
             Self::Delete(array, Some(index)) => {
                 write!(f, "(delete (index {array:?} {index:?}))")
             }
@@ -284,6 +291,17 @@ impl Debug for Variable<'_> {
             Self::Rstart => write!(f, "RSTART"),
             Self::Rlength => write!(f, "RLENGTH"),
             Self::Environ => write!(f, "ENVIRON"),
+        }
+    }
+}
+
+impl Debug for Redirection {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        match self {
+            Self::WriteFile => write!(f, ">"),
+            Self::AppendFile => write!(f, ">>"),
+            Self::PipeIn => write!(f, "|"),
+            Self::CoprocessIn => write!(f, "|&"),
         }
     }
 }

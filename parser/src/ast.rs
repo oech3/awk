@@ -157,11 +157,11 @@ pub enum Place<'a> {
 }
 
 /// GNU docs: https://www.gnu.org/software/gawk/manual/html_node/Redirection.html
-#[derive(Debug, Clone)]
-pub enum Redirection<'a> {
-    Write(WriteKind, Slice<'a>),
-    WriteFile(&'a str),
-    AppendFile(&'a str),
+pub enum Redirection {
+    WriteFile,
+    AppendFile,
+    PipeIn,
+    CoprocessIn,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -227,7 +227,7 @@ pub enum SimpleStatement<'a> {
     Command {
         name: Command,
         args: Vec<'a, Expr<'a>>,
-        redirection: Option<Redirection<'a>>,
+        redirection: Option<(Redirection, Expr<'a>)>,
     },
     Delete(Variable<'a>, Option<Expr<'a>>),
 }
@@ -418,6 +418,18 @@ impl<'a> Place<'a> {
                 }
             }
             _ => Err((expr, ParsingError::OperatorExpectsVariable(span))),
+        }
+    }
+}
+
+impl Redirection {
+    pub fn parse(value: &Token) -> Option<Self> {
+        match value {
+            Token::GreaterThan => Some(Self::WriteFile),
+            Token::AppendPipe => Some(Self::AppendFile),
+            Token::Pipe => Some(Self::PipeIn),
+            Token::DoublePipe => Some(Self::CoprocessIn),
+            _ => None,
         }
     }
 }
