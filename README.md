@@ -6,22 +6,23 @@ This is a human, WIP, and clean implementation of an AWK interpreter, written in
 
 ### Lexer
 
-Pretty much done; lacking a POSIX-compatibility mode (trivial) and arena integration (trivial).
+Pretty much done; it is lacking a POSIX-compatibility mode (trivial) and arena integration (trivial).
 
 ### Parser
 
 Also mostly done; some bullet points:
 
-* Rough edges around error handling on expected tokens.
-* Preprocessor is TBD.
-* Missing command redirections.
+* Rough edges around error handling on expected tokens (remove `todo!()` and friends on a few error branches; trivial).
+* Extend spans during Pratt parsing for better errors (trivial-ish?).
+* The preprocessor is TBD.
+* It would be nice to reduce LOC.
 * We are working on test coverage and fuzzing.
-* It would be nice to reduce LOC; maybe we get rid of S-expr debug output.
-  * It's possible we move to the `chumsky` crate for this reason and Ariadne support. I currently think it's not necessary tho.
+  * It's possible we move to the `chumsky` crate for this reason and `ariadne` support. I currently think it's not necessary, though; we probably are better suited to owning the parser given how idiosyncratic and ambiguous AWK's grammar is.
+* Start running awk parsing tests at some point (especially when we get a basic interpreter and nail down `--pretty-print`).
 
 ### Interpreter
 
-TBD; work on it will be started once we get good testing on the parser. Ideally, the design should be a bytecode machine or a JIT. Expect this to be a fast-paced repo.
+We are looking forward to building a basic tree-walking interpreter to get integration testing going, as well as a baseline for future iterations. Ideally, these should be a bytecode machine or a JIT. Expect this to be a fast-paced repo. The design sketch is for it to be a cooperative I/O machine, probably built with `smol`; if we want to better support AWK's long-forgotten number-crunching intent, we could easily extend this to parallel computations.
 
 ## Contributing
 
