@@ -48,13 +48,14 @@ impl Display for Ast<'_> {
             write_body_ln(f, body, 0)?;
             writeln!(f)?;
         }
-        for (fun, Function { args, body }) in &self.functions {
-            // GNU appears to place two newlines before functions.
-            // I think it's a bug but we'll keep it.
-            write!(f, "\nfunction {fun}(")?;
+        for (i, (fun, Function { args, body })) in self.functions.iter().enumerate() {
+            write!(f, "function {fun}(")?;
             write_args(f, args, 0)?;
-            writeln!(f, ") ")?;
-            write_body_ln(f, body, 0)?;
+            writeln!(f, ")")?;
+            write_body(f, body, 0)?;
+            if i + 1 != self.functions.len() {
+                writeln!(f, "\n")?;
+            }
         }
         Ok(())
     }
