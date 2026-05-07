@@ -24,7 +24,8 @@ type LexItem<'a> = <Lexer<'a> as Iterator>::Item;
 impl<'a> Lexer<'a> {
     pub fn new(source: &'a [u8], arena: &'a Bump) -> Self {
         Self {
-            inner: Token::lex(source, arena).spanned().peekable(),
+            // TODO: wire in POSIX & GNU strict conformance.
+            inner: Token::lex(source, arena, false, false).spanned().peekable(),
             span: Span::default(),
             // source,
         }

@@ -25,12 +25,13 @@ pub type Result<T, E = LexingError> = std::result::Result<T, E>;
 // TODO: check wnat GNU does about potentially reserved `@ident`; add error branch if so.
 #[derive(Logos, Debug, PartialEq)]
 #[logos(utf8 = false)]
-#[logos(skip("[ \t]+"))]
-#[logos(skip(r"(\\\n)+"))]
+#[logos(skip(r"(?&ignore)"))]
 #[logos(skip("#", skip_line))]
 #[logos(extras = Extra)]
 #[logos(subpattern identifier = r"[a-zA-Z_][a-zA-Z0-9_]*")]
-#[logos(error(LexingError, callback = |lex| LexingError::from(lex)))]
+#[logos(subpattern ignore = r"(?:[ \t]|(\\\n))+")]
+#[logos(subpattern ignore_with_nl = r"(?:(?&ignore)|\n)*")]
+#[logos(error(LexingError, callback = |lex| LexingError::unexpected(lex)))]
 pub enum Token<'a> {
     #[regex(r"[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?", parse_float)]
     #[regex(r"\.[0-9]+([eE][+-]?[0-9]+)?", parse_float)]
@@ -41,23 +42,23 @@ pub enum Token<'a> {
     BeginPattern,
     #[token("END", accept_expression)]
     EndPattern,
-    #[token("BEGINFILE", accept_expression)]
+    #[token("BEGINFILE", |lex| parse_non_posix_keyword(lex, Token::BeginFilePattern))]
     BeginFilePattern,
-    #[token("ENDFILE", accept_expression)]
+    #[token("ENDFILE", |lex| parse_non_posix_keyword(lex, Token::EndFilePattern))]
     EndFilePattern,
     #[token("@load \"", parse_directive)]
     LoadDirective(Slice<'a>),
     #[token("@include \"", parse_directive)]
     IncludeDirective(Slice<'a>),
-    #[token("@nsinclude \"", parse_directive)]
+    #[token("@nsinclude \"", parse_non_posix_directive)]
     NsIncludeDirective(Slice<'a>),
-    #[regex("@namespace \"(?&identifier)\"", |lex| parse_ident(lex, 12..lex.slice().len() - 1))]
+    #[regex("@namespace \"(?&identifier)\"", parse_namespace_directive)]
     NamespaceDirective(&'a str),
-    #[token("@concurrent", accept_expression)]
+    #[token("@concurrent", parse_non_gnu_operator)]
     ConcurrentDirective,
     #[token("if", accept_expression)]
     If,
-    #[regex(r"else\n*", accept_expression)]
+    #[regex(r"else(?&ignore_with_nl)", accept_expression)]
     Else,
     #[token("switch", accept_expression)]
     Switch,
@@ -65,7 +66,7 @@ pub enum Token<'a> {
     Case,
     #[token("default", accept_expression)]
     Default,
-    #[regex(r"do\n*", accept_expression)]
+    #[regex(r"do(?&ignore_with_nl)", accept_expression)]
     Do,
     #[token("while", accept_expression)]
     While,
@@ -94,6 +95,7 @@ pub enum Token<'a> {
     #[token("delete", accept_expression)]
     Delete,
     #[token("function", accept_expression)]
+    #[token("func", |lex| parse_non_posix_keyword(lex, Token::Function))]
     Function,
     #[token("NR", accept_expression)]
     NrVariable,
@@ -143,6 +145,7 @@ pub enum Token<'a> {
     #[token("%", accept_expression)]
     Percent,
     #[token("^", accept_expression)]
+    #[token("**", parse_non_posix_operator)]
     Circumflex,
     #[token("++", accept_expression)]
     Increment,
@@ -161,6 +164,7 @@ pub enum Token<'a> {
     #[token("%=", accept_expression)]
     PercentAssign,
     #[token("^=", accept_expression)]
+    #[token("**=", parse_non_posix_operator)]
     CaretAssign,
     #[token("==", accept_expression)]
     EqualTo,
@@ -174,9 +178,9 @@ pub enum Token<'a> {
     GreaterThan,
     #[token(">=", accept_expression)]
     GreaterOrEqualThan,
-    #[regex(r"&&\n*", accept_expression)]
+    #[regex(r"&&(?&ignore_with_nl)", accept_expression)]
     BooleanAnd,
-    #[regex(r"\|\|\n*", accept_expression)]
+    #[regex(r"\|\|(?&ignore_with_nl)", accept_expression)]
     BooleanOr,
     #[token("!", accept_expression)]
     Negation,
@@ -186,15 +190,17 @@ pub enum Token<'a> {
     NotMatching,
     #[token("|", accept_expression)]
     Pipe,
-    #[token("|&", accept_expression)]
+    #[token("|&", parse_non_posix_operator)]
     DoublePipe,
     #[token(">>", accept_expression)]
     AppendPipe,
-    #[regex(r"\?\n*", accept_expression)]
+    #[token("?", priority = 10)]
+    #[regex(r"\?(?&ignore_with_nl)", parse_non_posix_operator, priority = 11)]
     QuestionMark,
-    #[regex(r":\n*", accept_expression)]
+    #[token(":", priority = 10)]
+    #[regex(r":(?&ignore_with_nl)", parse_non_posix_operator, priority = 11)]
     Colon,
-    #[regex(r"\{\n*", accept_expression)]
+    #[regex(r"\{(?&ignore_with_nl)", accept_expression)]
     OpenBrace,
     #[token("}", accept_expression)]
     ClosedBrace,
@@ -206,7 +212,7 @@ pub enum Token<'a> {
     OpenBracket,
     #[token("]", accept_operator)]
     ClosedBracket,
-    #[regex(r",\n*", accept_expression)]
+    #[regex(r",(?&ignore_with_nl)", accept_expression)]
     Comma,
     #[token("$", accept_expression)]
     Record,
@@ -217,7 +223,12 @@ pub enum Token<'a> {
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct Extra(Context, *const Bump);
+pub struct Extra {
+    ctx: Context,
+    arena: *const Bump,
+    posix_strict: bool,
+    gnu_strict: bool,
+}
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub enum Context {
@@ -231,7 +242,7 @@ pub enum LexingError {
     #[default]
     #[error("Unknown error")]
     Unknown,
-    #[error("Unexpected token at {:?}: `{}`", .0, .1)]
+    #[error("Unexpected token at {:?}: {:?}", .0, .1)]
     Unexpected(Span, String),
     #[error("Unterminated string at {:?}", .0)]
     UnterminatedString(Span),
@@ -239,6 +250,10 @@ pub enum LexingError {
     UnterminatedRegex(Span),
     #[error("Unexpected End of File!")]
     UnexpectedEof,
+    #[error("Unknown token: {:?}.", .1)]
+    UnavailableOnPosix(Span, String),
+    #[error("Unknown token: {:?}.", .1)]
+    UnavailableOnGnu(Span, String),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -248,14 +263,42 @@ pub struct Identifier<'a> {
 }
 
 impl<'a> Token<'a> {
-    pub fn lex(source: &'a [u8], arena: &'a Bump) -> logos::Lexer<'a, Self> {
-        Lexer::with_extras(source, Extra(Context::AcceptExpression, arena))
+    pub fn lex(
+        source: &'a [u8],
+        arena: &'a Bump,
+        posix_strict: bool,
+        gnu_strict: bool,
+    ) -> logos::Lexer<'a, Self> {
+        Lexer::with_extras(
+            source,
+            Extra {
+                ctx: Context::AcceptExpression,
+                arena,
+                posix_strict,
+                gnu_strict,
+            },
+        )
     }
 }
 
-impl From<&mut Lexer<'_>> for LexingError {
-    fn from(lex: &mut Lexer<'_>) -> Self {
-        Self::Unexpected(lex.span(), String::from_utf8_lossy(lex.slice()).to_string())
+impl LexingError {
+    fn to_utf8(lex: &mut Lexer<'_>) -> String {
+        String::from_utf8_lossy(lex.slice()).to_string()
+    }
+
+    #[cold]
+    fn unexpected(lex: &mut Lexer<'_>) -> Self {
+        Self::Unexpected(lex.span(), Self::to_utf8(lex))
+    }
+
+    #[cold]
+    fn non_posix(lex: &mut Lexer<'_>) -> Self {
+        Self::UnavailableOnPosix(lex.span(), Self::to_utf8(lex))
+    }
+
+    #[cold]
+    fn non_uu(lex: &mut Lexer<'_>) -> Self {
+        Self::UnavailableOnGnu(lex.span(), Self::to_utf8(lex))
     }
 }
 
@@ -269,7 +312,7 @@ fn parse_string<'a>(lex: &mut logos::Lexer<'a, Token<'a>>) -> Result<Slice<'a>> 
 }
 
 fn parse_regex_or_slash<'a>(lex: &mut logos::Lexer<'a, Token<'a>>) -> Result<Token<'a>> {
-    match lex.extras.0 {
+    match lex.extras.ctx {
         Context::AcceptExpression => {
             accept_operator(lex);
             parse_content::<false, true, '/'>(lex).map(Token::Regex)
@@ -282,7 +325,26 @@ fn parse_regex_or_slash<'a>(lex: &mut logos::Lexer<'a, Token<'a>>) -> Result<Tok
 }
 
 fn parse_directive<'a>(lex: &mut Lexer<'a>) -> Result<Slice<'a>> {
+    accept_expression(lex);
     parse_content::<true, false, '"'>(lex)
+}
+
+fn parse_non_posix_directive<'a>(lex: &mut Lexer<'a>) -> Result<Slice<'a>> {
+    if lex.extras.posix_strict {
+        Err(LexingError::non_posix(lex))
+    } else {
+        parse_directive(lex)
+    }
+}
+
+fn parse_namespace_directive<'a>(lex: &mut Lexer<'a>) -> Result<&'a str> {
+    if lex.extras.posix_strict {
+        Err(LexingError::non_posix(lex))
+    } else {
+        accept_expression(lex);
+        let offset = "@namespace \"".len();
+        Ok(parse_ident(lex, offset..lex.slice().len() - 1))
+    }
 }
 
 fn parse_content<'a, const MINIMAL: bool, const REGEX: bool, const DELIMITER: char>(
@@ -310,8 +372,11 @@ fn parse_content<'a, const MINIMAL: bool, const REGEX: bool, const DELIMITER: ch
             b'\\' => {
                 out.to_mut(lex.extras.arena())
                     .extend_from_slice(&rest[start..i]);
-                let consumed =
-                    parse_escape::<MINIMAL, REGEX>(&rest[i..], out.to_mut(lex.extras.arena()))?;
+                let consumed = parse_escape::<MINIMAL, REGEX>(
+                    &rest[i..],
+                    out.to_mut(lex.extras.arena()),
+                    lex.extras.posix_strict,
+                )?;
                 start = i + consumed;
             }
             _ => break,
@@ -327,6 +392,7 @@ fn parse_content<'a, const MINIMAL: bool, const REGEX: bool, const DELIMITER: ch
 fn parse_escape<const MINIMAL: bool, const REGEX: bool>(
     slice: &[u8],
     out: &mut Vec<u8>,
+    posix_strict: bool,
 ) -> Result<usize> {
     let mut count = 2;
     let is_oct = |x: char| ('0'..'8').contains(&x);
@@ -368,7 +434,7 @@ fn parse_escape<const MINIMAL: bool, const REGEX: bool>(
                     .take(count - 1)
                     .fold(0, |acc, digit| acc * 8 + digit - b'0') as char
             }
-            'x' => todo!(),
+            'x' if !posix_strict => todo!(),
             'u' => todo!(),
             // Unspecified by POSIX; we ditto GNU.
             c => c, // TODO: Output warning
@@ -388,6 +454,33 @@ fn parse_float(lex: &mut Lexer<'_>) -> f64 {
     parse_ident(lex, ..).parse().unwrap_or(0.)
 }
 
+fn parse_non_posix_keyword<'a>(lex: &mut Lexer<'a>, other: Token<'a>) -> Token<'a> {
+    if lex.extras.posix_strict {
+        Token::Identifier(Identifier::without_namespace(lex))
+    } else {
+        accept_expression(lex);
+        other
+    }
+}
+
+fn parse_non_posix_operator(lex: &mut Lexer<'_>) -> Result<()> {
+    if lex.extras.posix_strict {
+        Err(LexingError::non_posix(lex))
+    } else {
+        accept_expression(lex);
+        Ok(())
+    }
+}
+
+fn parse_non_gnu_operator(lex: &mut Lexer<'_>) -> Result<()> {
+    if lex.extras.gnu_strict {
+        Err(LexingError::non_uu(lex))
+    } else {
+        accept_expression(lex);
+        Ok(())
+    }
+}
+
 impl<'a> Identifier<'a> {
     fn without_namespace(lex: &mut Lexer<'a>) -> Self {
         Self {
@@ -396,22 +489,26 @@ impl<'a> Identifier<'a> {
         }
     }
 
-    fn with_namespace(lex: &mut Lexer<'a>) -> Self {
-        // SAFETY: The regex matching ensures it is present and well-formed.
-        let separator = unsafe { memchr(b':', lex.slice()).unwrap_unchecked() };
-        Self {
-            namespace: Some(parse_ident(lex, ..separator)),
-            literal: parse_ident(lex, separator + 2..),
+    fn with_namespace(lex: &mut Lexer<'a>) -> Result<Self> {
+        if lex.extras.posix_strict {
+            Err(LexingError::non_posix(lex))
+        } else {
+            // SAFETY: The regex matching ensures it is present and well-formed.
+            let separator = unsafe { memchr(b':', lex.slice()).unwrap_unchecked() };
+            Ok(Self {
+                namespace: Some(parse_ident(lex, ..separator)),
+                literal: parse_ident(lex, separator + 2..),
+            })
         }
     }
 }
 
 fn accept_expression(lex: &mut Lexer<'_>) {
-    lex.extras.0 = Context::AcceptExpression;
+    lex.extras.ctx = Context::AcceptExpression;
 }
 
 fn accept_operator(lex: &mut Lexer<'_>) {
-    lex.extras.0 = Context::AcceptOperator;
+    lex.extras.ctx = Context::AcceptOperator;
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone)]
@@ -469,6 +566,6 @@ impl Extra {
     fn arena<'a>(&self) -> &'a Bump {
         // SAFETY: lives for as long as self because it's the same lifetime as
         // the source being lexed; Logos just can't take lifetimes on extras.
-        unsafe { &*self.1 }
+        unsafe { &*self.arena }
     }
 }

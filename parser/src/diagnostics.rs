@@ -78,6 +78,8 @@ impl ParsingError {
                 LexingError::UnterminatedString(span) => Some(span.clone()),
                 LexingError::UnterminatedRegex(span) => Some(span.clone()),
                 LexingError::UnexpectedEof => None,
+                LexingError::UnavailableOnPosix(span, _) => Some(span.clone()),
+                LexingError::UnavailableOnGnu(span, _) => Some(span.clone()),
             },
             Self::UnclosedScope(span) => Some(span.clone()),
             Self::UnexpectedToken(span, _) => Some(span.clone()),
@@ -131,6 +133,12 @@ impl ParsingError {
             Self::MissingTernaryOr(_) => Some(
                 "Ternaries select between to expression based on a condition, like `bool ? foo : bar`.",
             ),
+            Self::LexingError(LexingError::UnavailableOnPosix(_, _)) => {
+                Some("This item is not available in POSIX-strict or traditional modes.")
+            }
+            Self::LexingError(LexingError::UnavailableOnGnu(_, _)) => {
+                Some("This item is not available in GNU-strict mode.")
+            }
             _ => None,
         }
     }
