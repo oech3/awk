@@ -4,24 +4,7 @@ This is a human, WIP, and clean implementation of an AWK interpreter, written in
 
 ## State of the Repo
 
-### Lexer
-
-Essentially done; it is only lacking thorough testing and numeric escapings (good first contribution).
-
-### Parser
-
-Also mostly done; some bullet points:
-
-* Extend spans during Pratt parsing for better error messages (trivial-ish?).
-* The preprocessor is TBD (not complicated, but will tangle up pretty printing).
-* It would be nice to reduce LOC.
-* We are working on test coverage and fuzzing.
-  * It's possible we move to the `chumsky` crate for this reason and `ariadne` support. I currently think it's not necessary, though; we probably are better suited to owning the parser given how idiosyncratic and ambiguous AWK's grammar is.
-* Start running gawk parsing tests at some point (especially when we get a basic interpreter and nail down `--pretty-print`).
-
-### Interpreter
-
-We are looking forward to building a basic tree-walking interpreter to get integration testing going, as well as a baseline for future iterations. Ideally, these should be a bytecode machine or a JIT. Expect this to be a fast-paced repo. The design sketch is for it to be a cooperative I/O machine, probably built with `smol`; if we want to better support AWK's long-forgotten number-crunching intent, we could easily extend this to parallel computations.
+Check out https://github.com/uutils/awk/issues/16.
 
 ## Contributing
 
