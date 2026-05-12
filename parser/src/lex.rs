@@ -97,7 +97,7 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn lex_ident(&self, source: &[u8], arena: &'a Bump) -> Result<&'a str> {
-        let Some(Ok(Token::Identifier(ident))) = Token::lex(source, arena, false, true).next()
+        let Some(Ok(Token::Identifier(ident))) = Token::lex(source, arena, true, true).next()
         else {
             return Err(ParsingError::UnexpectedToken(
                 self.span().start + 1..self.span().end - 1,
