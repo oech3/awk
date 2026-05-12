@@ -63,6 +63,8 @@ impl<'a, 'b> Pratt<'a, 'b> {
     ) -> Result<Expr<'a>> {
         while let Some((next, span)) = lex.peek_with_span() {
             let next = next?;
+            // Short circuits if requested. Useful for returning early when a
+            // token may also match a known operator.
             if delimiter(next) {
                 break;
             }
@@ -73,13 +75,13 @@ impl<'a, 'b> Pratt<'a, 'b> {
                     break;
                 }
                 lex.next();
-                let place = Place::promote_from(lhs.take(), lex.span())?;
+                let place = Place::lower_from(lhs.take(), lex.span())?;
                 Expr::node(op.expr(place), self.parser.arena)
             } else if let Ok(op) = BinaryPlaceOperator::parse(next, &span) {
                 if op.binding_power().0 < min_bp {
                     break;
                 }
-                let place = Place::promote_from(lhs.take(), lex.span())?;
+                let place = Place::lower_from(lhs.take(), lex.span())?;
                 self.parse_place_op(lex, op, place)?
             } else if let Ok(op) = BinaryOperator::parse(next, &span)
                 && !matches!(next, Token::Increment | Token::Decrement)
@@ -123,7 +125,7 @@ impl<'a, 'b> Pratt<'a, 'b> {
         if let Ok(op) = UnaryPlaceOperator::parse_prefix(&next, &lex.span()) {
             let rhs = self.parse_expression(lex, op.binding_power())?;
             Ok(Expr::node(
-                op.expr(Place::promote_from(rhs, lex.span())?),
+                op.expr(Place::lower_from(rhs, lex.span())?),
                 self.parser.arena,
             ))
         } else if let Ok(op) = UnaryOperator::parse(&next, &lex.peeked_span()?) {
@@ -142,17 +144,15 @@ impl<'a, 'b> Pratt<'a, 'b> {
         // redirection reading from file. Does not accept typed regexes.
         self.typed_regex = false;
         let place = if lex.peek_with(Token::is_place) {
-            Some(Place::promote_from(
-                self.parse_redirection(lex)?,
-                lex.span(),
-            ))
+            Some(Place::lower_from(self.parse_redirection(lex)?, lex.span()))
         } else {
             None
         }
-        .transpose();
+        .transpose(); // trick to simplify checks.
 
         let getline = |gl| Expr::node(ExprNode::Getline(gl), self.parser.arena);
         match place {
+            // Nonsensical expression; gawk just assumes concatenation.
             Err((expr, _)) => Ok(Expr::node(
                 BinaryOperator::Concat.expr(getline(Getline::FromInput(None)), expr),
                 self.parser.arena,
@@ -170,6 +170,9 @@ impl<'a, 'b> Pratt<'a, 'b> {
 
     fn parse_atom_or_call(&mut self, lex: &mut Lexer<'a>) -> Result<Expr<'a>> {
         let next = lex.expect_next()?;
+        // Only accepts calls if the function name is next to the parenthesis.
+        // If there is a space, we interpret it as a concatenation and let the
+        // interpreter error if necessary; elsewhere we can't concat with vars.
         if let Token::Identifier(name) = next
             && lex.peek_is(&Token::OpenParent)
             && lex.is_yuxtaposed()
@@ -179,6 +182,7 @@ impl<'a, 'b> Pratt<'a, 'b> {
         } else {
             match self.parser.parse_atom(lex, next, self.typed_regex) {
                 Ok(atom) => Ok(Expr::leaf(atom)),
+                // Add detail to this error.
                 Err(ParsingError::UnexpectedToken(_, str)) => {
                     Err(ParsingError::InvalidExpression(lex.span(), str))
                 }
@@ -193,7 +197,9 @@ impl<'a, 'b> Pratt<'a, 'b> {
         op: BinaryOperator,
         lhs: Expr<'a>,
     ) -> Result<Expr<'a>> {
+        // Ensures it's not a typed regex; rejects cases like `x = @/a/ + 1`.
         self.typecheck(lex, &lhs)?;
+        // This is just a parsing construct; we only skip if it's a real token.
         lex.consume_with(|_| op != BinaryOperator::Concat);
         self.typed_regex = matches!(op, BinaryOperator::Matches | BinaryOperator::MatchesNot);
 
@@ -228,14 +234,18 @@ impl<'a, 'b> Pratt<'a, 'b> {
             self.parse_expression(lex, op.binding_power().1)?
         };
         if op == BinaryPlaceOperator::ArrayAccess {
+            // We can only index on variables.
             if !matches!(place, Place::Variable(_)) {
                 return Err(ParsingError::OperatorExpectsVariable(lex.span()));
             }
+            // Concatenates each dimension with `SUBSEP`.
+            // FIXME: undo when pretty-printing or defer to the interpreter.
             rhs = self.parse_array_index(lex, rhs)?;
         }
         Ok(Expr::node(op.expr(place, rhs), self.parser.arena))
     }
 
+    /// Continuously
     pub fn parse_array_index(&mut self, lex: &mut Lexer<'a>, lhs: Expr<'a>) -> Result<Expr<'a>> {
         let mut rhs = lhs;
         while lex.consume(&Token::Comma) {
@@ -286,7 +296,7 @@ impl<'a, 'b> Pratt<'a, 'b> {
         let pipe = |place| Expr::node(op.expr_getline(place, lhs), self.parser.arena);
         if lex.peek_with(Token::is_place) {
             let expr = self.parse_redirection(lex)?;
-            match Place::promote_from(expr, lex.span()) {
+            match Place::lower_from(expr, lex.span()) {
                 Ok(place) => Ok(pipe(Some(place))),
                 Err((expr, _)) => Ok(Expr::node(
                     BinaryOperator::Concat.expr(pipe(None), expr),
@@ -302,6 +312,7 @@ impl<'a, 'b> Pratt<'a, 'b> {
         self.parse_expression(lex, BinaryOperator::Concat.binding_power().1 - 1)
     }
 
+    /// Errors if `expr` is a typed regex.
     fn typecheck(&self, lex: &mut Lexer<'a>, expr: &Expr<'a>) -> Result<()> {
         if matches!(expr, Expr::Leaf(Atom::TypedRegex(_))) {
             Err(ParsingError::UnexpectedTypedRegex(lex.span()))

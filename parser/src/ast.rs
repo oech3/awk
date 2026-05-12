@@ -151,6 +151,8 @@ pub enum BinaryPlaceOperator {
     InArray,
 }
 
+/// Essentially lvalues. To the interpreter, these do not produce a value, but
+/// get theirs modified. A place is a subset of all expressions.
 pub enum Place<'a> {
     Record(Expr<'a>),
     Variable(Variable<'a>),
@@ -396,7 +398,8 @@ impl<'a> BinaryPlaceOperator {
 }
 
 impl<'a> Place<'a> {
-    pub fn promote_from(expr: Expr<'a>, span: Span) -> Result<Self, (Expr<'a>, ParsingError)> {
+    /// Attempts to lower an expression into a place; on error returns it back.
+    pub fn lower_from(expr: Expr<'a>, span: Span) -> Result<Self, (Expr<'a>, ParsingError)> {
         match expr {
             Expr::Leaf(Atom::Variable(var)) => Ok(Self::Variable(var)),
             Expr::Node(node)

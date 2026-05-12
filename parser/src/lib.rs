@@ -87,7 +87,7 @@ impl<'a> Parser<'a> {
         //   * Pattern (Expression)
         //     * Expects brackets afterwards (body) or a newline (default).
         //   * Action (Statement)
-        //     * Expects a newline afterwards; inserts default pattern.
+        //     * Expects a newline afterwards.
         while let Some(tok) = lex.peek() {
             if tok.as_ref().is_ok_and(Token::is_pattern_start) {
                 match self.parse_pattern(lex)? {
@@ -219,6 +219,8 @@ impl<'a> Parser<'a> {
             }
         }
     }
+
+    /// These are a subset of statements usable in places like for-loop defs.
     #[tracing::instrument]
     fn parse_simple_statement(
         &mut self,
