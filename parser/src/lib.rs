@@ -178,9 +178,9 @@ impl<'a> Parser<'a> {
             Token::BeginFilePattern => Ok(Right(SpecialPattern::BeginFile)),
             Token::EndFilePattern => Ok(Right(SpecialPattern::EndFile)),
             _ => {
-                let expr = self.parse_expression(lex)?;
+                let expr = self.parse_expression(lex, false)?;
                 Ok(Left(if lex.consume(&Token::Comma) {
-                    let expr_end = self.parse_expression(lex)?;
+                    let expr_end = self.parse_expression(lex, false)?;
                     RulePattern::Range(expr, expr_end)
                 } else {
                     RulePattern::Expression(expr)
@@ -226,7 +226,10 @@ impl<'a> Parser<'a> {
     ) -> Option<Result<SimpleStatement<'a>>> {
         let peek = lex.expect_peek().ok()?;
         if peek.is_expr_start() {
-            Some(self.parse_expression(lex).map(SimpleStatement::Expression))
+            Some(
+                self.parse_expression(lex, false)
+                    .map(SimpleStatement::Expression),
+            )
         } else {
             match peek {
                 token if let Some(name) = token.maps_to_command() => {
@@ -357,14 +360,14 @@ impl<'a> Parser<'a> {
                 Token::Continue => Statement::Continue,
                 Token::Return => Statement::Return(
                     (!lex.peek_with(Token::is_stmnt_or_block_end))
-                        .then(|| self.parse_expression(lex))
+                        .then(|| self.parse_expression(lex, true))
                         .transpose()?,
                 ),
                 Token::Next => Statement::Next,
                 Token::NextFile => Statement::NextFile,
                 Token::Exit => Statement::Exit(
                     (!lex.peek_with(Token::is_stmnt_or_block_end))
-                        .then(|| self.parse_expression(lex))
+                        .then(|| self.parse_expression(lex, false))
                         .transpose()?,
                 ),
                 _ => {
@@ -386,7 +389,7 @@ impl<'a> Parser<'a> {
             &Token::OpenParent,
             ParsingError::MissingParenthesisInStatement,
         )?;
-        let expr = self.parse_expression(lex)?;
+        let expr = self.parse_expression(lex, false)?;
         lex.expect(
             &Token::ClosedParent,
             ParsingError::UnclosedParenthesisInStatement,
@@ -402,7 +405,7 @@ impl<'a> Parser<'a> {
     ) -> Result<Statement<'a>> {
         lex.consume(&Token::Newline);
         let condition = (!lex.peek_is(&Token::Semicolon))
-            .then(|| self.parse_expression(lex))
+            .then(|| self.parse_expression(lex, false))
             .transpose()?;
         lex.expect(&Token::Semicolon, ParsingError::InvalidForLoop)?;
 
@@ -469,7 +472,7 @@ impl<'a> Parser<'a> {
     fn parse_case(&mut self, lex: &mut Lexer<'a>) -> Result<Atom<'a>> {
         lex.expect(&Token::Case, ParsingError::MissingSwitchBranch)?;
         let next = lex.expect_next()?;
-        let value = self.parse_atom(lex, next)?;
+        let value = self.parse_atom(lex, next, true)?;
         lex.expect(&Token::Colon, ParsingError::ColonMustFollowCase)?;
         match value {
             Atom::Variable(_) => Err(ParsingError::InvalidCaseValue(lex.span())),
@@ -506,16 +509,16 @@ impl<'a> Parser<'a> {
             return Ok(arguments);
         }
 
-        arguments.push(self.parse_expression(lex)?);
+        arguments.push(self.parse_expression(lex, true)?);
         while lex.consume(&Token::Comma) {
-            arguments.push(self.parse_expression(lex)?);
+            arguments.push(self.parse_expression(lex, true)?);
         }
         Ok(arguments)
     }
 
     fn parse_command_args(&mut self, lex: &mut Lexer<'a>) -> Result<Vec<'a, Expr<'a>>> {
         let mut arguments = Vec::new_in(self.arena);
-        let mut pratt = Pratt::new(self);
+        let mut pratt = Pratt::new(self, false);
         if !lex.peek_with(Token::is_expr_start) {
             return Ok(arguments);
         }
@@ -537,7 +540,7 @@ impl<'a> Parser<'a> {
             lex.next();
             Ok(Some((
                 redirection,
-                Pratt::new(self).parse_redirection(lex)?,
+                Pratt::new(self, false).parse_redirection(lex)?,
             )))
         } else {
             Ok(None)
@@ -550,7 +553,7 @@ impl<'a> Parser<'a> {
             return Err(ParsingError::OperatorExpectsVariable(lex.span()));
         };
         let index = if lex.consume(&Token::OpenBracket) {
-            let mut pratt = Pratt::new(self);
+            let mut pratt = Pratt::new(self, false);
             let first = pratt.parse(lex)?;
             Some(pratt.parse_array_index(lex, first)?)
         } else {
@@ -608,8 +611,8 @@ impl<'a> Parser<'a> {
     }
 
     #[tracing::instrument]
-    fn parse_expression(&mut self, lex: &mut Lexer<'a>) -> Result<Expr<'a>> {
-        Pratt::new(self).parse(lex)
+    fn parse_expression(&mut self, lex: &mut Lexer<'a>, typed_regex: bool) -> Result<Expr<'a>> {
+        Pratt::new(self, typed_regex).parse(lex)
     }
 
     #[tracing::instrument]
@@ -642,11 +645,18 @@ impl<'a> Parser<'a> {
     }
 
     #[tracing::instrument]
-    fn parse_atom(&self, lex: &mut Lexer<'a>, token: Token<'a>) -> Result<Atom<'a>> {
+    fn parse_atom(
+        &self,
+        lex: &mut Lexer<'a>,
+        token: Token<'a>,
+        typed_regex: bool,
+    ) -> Result<Atom<'a>> {
         match token {
             Token::Number(n) => Ok(Atom::Number(n)),
             Token::String(s) => Ok(Atom::String(s)),
             Token::Regex(r) => Ok(Atom::Regex(r)),
+            Token::TypedRegex(r) if typed_regex => Ok(Atom::TypedRegex(r)),
+            Token::TypedRegex(_) => Err(ParsingError::UnexpectedTypedRegex(lex.span())),
             token => match self.get_place(lex, token) {
                 Some(var) => Ok(Atom::Variable(var)),
                 None => Err(ParsingError::UnexpectedToken(

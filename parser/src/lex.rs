@@ -71,14 +71,16 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn expect_identifier(&mut self) -> super::Result<lexer::Identifier<'a>> {
-        let Token::Identifier(name) = self.expect_with(
-            |t| matches!(t, Token::Identifier(_)),
-            "expected an identifier.".into(),
-        )?
-        else {
-            unreachable!()
-        };
-        Ok(name)
+        if let Some(Token::Identifier(ident)) =
+            self.next_if(|t| matches!(t, Token::Identifier(_)))?
+        {
+            Ok(ident)
+        } else {
+            Err(ParsingError::UnexpectedToken(
+                self.peeked_span().unwrap_or(self.span()),
+                "expected an identifier.".into(),
+            ))
+        }
     }
 
     pub fn consume(&mut self, token: &Token) -> bool {
@@ -103,9 +105,12 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn next_if(&mut self, f: impl FnOnce(&LexItem<'a>) -> bool) -> Option<LexItem<'a>> {
-        let next = self.inner.next_if(|(tok, _)| f(tok));
-        self.advance_span(next)
+    pub fn next_if(
+        &mut self,
+        f: impl FnOnce(&Token<'a>) -> bool,
+    ) -> lexer::Result<Option<Token<'a>>> {
+        let next = self.inner.next_if(|(tok, _)| tok.as_ref().is_ok_and(f));
+        self.advance_span(next).transpose()
     }
 
     pub fn expect_next(&mut self) -> super::Result<Token<'a>> {

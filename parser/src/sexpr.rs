@@ -256,6 +256,7 @@ impl Debug for Atom<'_> {
             Self::String(str) => write!(f, "{str:?}"),
             Self::Number(num) => write!(f, "{num}"),
             Self::Regex(rgx) => write!(f, "/{rgx}/"),
+            Self::TypedRegex(rgx) => write!(f, "@/{rgx}/"),
             Self::BigInt() | Self::BigFloat() => unimplemented!(),
         }
     }

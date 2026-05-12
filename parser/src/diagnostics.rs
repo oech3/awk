@@ -49,8 +49,8 @@ pub enum ParsingError {
     UnclosedArrayAccess(Span),
     #[error("Expected operand to be a variable.")]
     OperatorExpectsVariable(Span),
-    #[error("Malformed expression.")]
-    InvalidExpression(Span),
+    #[error("Malformed expression: {}", .1)]
+    InvalidExpression(Span, String),
     #[error("Missing alternate branch in ternary expression.")]
     MissingTernaryOr(Span),
     #[error("Missing closing parenthesis in function call to `{}`.", .1)]
@@ -67,6 +67,8 @@ pub enum ParsingError {
     ExpectedBinaryOperator(Span),
     #[error("Expected a placing operation.")]
     ExpectedPlaceOperator(Span),
+    #[error("Typed regular expressions not accepted in this position.")]
+    UnexpectedTypedRegex(Span),
 }
 
 impl ParsingError {
@@ -100,7 +102,7 @@ impl ParsingError {
             Self::UnclosedParenthesisExpression(span) => Some(span.clone()),
             Self::UnclosedArrayAccess(span) => Some(span.clone()),
             Self::OperatorExpectsVariable(span) => Some(span.clone()),
-            Self::InvalidExpression(span) => Some(span.clone()),
+            Self::InvalidExpression(span, _) => Some(span.clone()),
             Self::MissingTernaryOr(span) => Some(span.clone()),
             Self::FunctionCallMissingParenthesis(span, _) => Some(span.clone()),
             Self::FunctionCallSeparatedIdent(span) => Some(span.clone()),
@@ -109,6 +111,7 @@ impl ParsingError {
             Self::ExpectedUnaryOperator(span) => Some(span.clone()),
             Self::ExpectedBinaryOperator(span) => Some(span.clone()),
             Self::ExpectedPlaceOperator(span) => Some(span.clone()),
+            Self::UnexpectedTypedRegex(span) => Some(span.clone()),
         }
     }
     fn hint(&self) -> Option<&'static str> {
@@ -139,6 +142,9 @@ impl ParsingError {
             Self::LexingError(LexingError::UnavailableOnGnu(_, _)) => {
                 Some("This item is not available in GNU-strict mode.")
             }
+            Self::UnexpectedTypedRegex(_) => Some(
+                "This is only valid in some contexts, like a right-hand assignment or a function argument.",
+            ),
             _ => None,
         }
     }

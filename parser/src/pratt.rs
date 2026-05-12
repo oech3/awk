@@ -8,7 +8,7 @@ use lexer::Token;
 use crate::{
     IdentifierExt, Lexer, Parser, Result,
     ast::{
-        BinaryOperator, BinaryPlaceOperator, BindingPower, Expr, ExprNode, Getline, Place,
+        Atom, BinaryOperator, BinaryPlaceOperator, BindingPower, Expr, ExprNode, Getline, Place,
         Redirection, Ternary, UnaryOperator, UnaryPlaceOperator, Variable, WriteKind,
     },
     diagnostics::ParsingError,
@@ -17,11 +17,15 @@ use crate::{
 
 pub struct Pratt<'a, 'b> {
     parser: &'b mut Parser<'a>,
+    typed_regex: bool,
 }
 
 impl<'a, 'b> Pratt<'a, 'b> {
-    pub fn new(parser: &'b mut Parser<'a>) -> Self {
-        Self { parser }
+    pub fn new(parser: &'b mut Parser<'a>, typed_regex: bool) -> Self {
+        Self {
+            parser,
+            typed_regex,
+        }
     }
 
     pub fn parse(&mut self, lex: &mut Lexer<'a>) -> Result<Expr<'a>> {
@@ -62,6 +66,8 @@ impl<'a, 'b> Pratt<'a, 'b> {
             if delimiter(next) {
                 break;
             }
+            // Reset typed regex acceptance.
+            self.typed_regex = false;
             lhs = if let Ok(op) = UnaryPlaceOperator::parse_suffix(next, &span) {
                 if op.binding_power() < min_bp {
                     break;
@@ -100,16 +106,20 @@ impl<'a, 'b> Pratt<'a, 'b> {
     }
 
     fn parse_parenthesized(&mut self, lex: &mut Lexer<'a>) -> Result<Expr<'a>> {
-        let inner = self.parse(lex);
+        // I would consider this a gawk bug, but it's most likely a wontfix.
+        self.typed_regex = false;
+        let inner = self.parse(lex)?;
         lex.expect(
             &Token::ClosedParent,
             ParsingError::UnclosedParenthesisExpression,
-        )
-        .and(inner)
+        )?;
+        Ok(inner)
     }
 
     fn parse_prefix(&mut self, lex: &mut Lexer<'a>) -> Result<Expr<'a>> {
         let next = lex.expect_next()?;
+        // No prefix operator accepts them.
+        self.typed_regex = false;
         if let Ok(op) = UnaryPlaceOperator::parse_prefix(&next, &lex.span()) {
             let rhs = self.parse_expression(lex, op.binding_power())?;
             Ok(Expr::node(
@@ -120,13 +130,17 @@ impl<'a, 'b> Pratt<'a, 'b> {
             let rhs = self.parse_expression(lex, op.binding_power())?;
             Ok(Expr::node(op.expr(rhs), self.parser.arena))
         } else {
-            Err(ParsingError::InvalidExpression(lex.span()))
+            Err(ParsingError::InvalidExpression(
+                lex.span(),
+                "expected a valid prefix operator".into(),
+            ))
         }
     }
 
     fn parse_prefix_getline(&mut self, lex: &mut Lexer<'a>) -> Result<Expr<'a>> {
         // Consumes with maximum precedence the following place and/or
-        // redirection reading from file.
+        // redirection reading from file. Does not accept typed regexes.
+        self.typed_regex = false;
         let place = if lex.peek_with(Token::is_place) {
             Some(Place::promote_from(
                 self.parse_redirection(lex)?,
@@ -163,9 +177,12 @@ impl<'a, 'b> Pratt<'a, 'b> {
             self.parser
                 .parse_function_call(lex, name.qualify(self.parser.namespace), lex.span())
         } else {
-            match self.parser.parse_atom(lex, next) {
+            match self.parser.parse_atom(lex, next, self.typed_regex) {
                 Ok(atom) => Ok(Expr::leaf(atom)),
-                Err(_) => Err(ParsingError::InvalidExpression(lex.span())),
+                Err(ParsingError::UnexpectedToken(_, str)) => {
+                    Err(ParsingError::InvalidExpression(lex.span(), str))
+                }
+                Err(e) => Err(e),
             }
         }
     }
@@ -176,7 +193,9 @@ impl<'a, 'b> Pratt<'a, 'b> {
         op: BinaryOperator,
         lhs: Expr<'a>,
     ) -> Result<Expr<'a>> {
+        self.typecheck(lex, &lhs)?;
         lex.consume_with(|_| op != BinaryOperator::Concat);
+        self.typed_regex = matches!(op, BinaryOperator::Matches | BinaryOperator::MatchesNot);
 
         let rhs = self.parse_expression(lex, op.binding_power().1)?;
         Ok(Expr::node(op.expr(lhs, rhs), self.parser.arena))
@@ -189,7 +208,25 @@ impl<'a, 'b> Pratt<'a, 'b> {
         place: Place<'a>,
     ) -> Result<Expr<'a>> {
         lex.next();
-        let mut rhs = self.parse_expression(lex, op.binding_power().1)?;
+        self.typed_regex = matches!(op, BinaryPlaceOperator::Assignment);
+        // Assignment expressions can consume with maximum precedence a
+        // following typed regex, so it bypasses ternaries (the only operations
+        // with lesser binding power); i.e., we parse `x = @/a/ ? a : b` into
+        // `(?: (= x @/a/) a b)`. This is generally true for all positions of
+        // typed regexes, but only an edge case here.
+        let mut rhs = if self.typed_regex
+            && let Some(Token::TypedRegex(slice)) =
+                lex.next_if(|t| matches!(t, Token::TypedRegex(_)))?
+        {
+            let lhs = Expr::Leaf(Atom::TypedRegex(slice));
+            // We fold it in order to catch invalid cases, like `x = @/a/ + 1`.
+            // Also allows us to bypass ternaries without binding power hacks.
+            self.fold_rhs(lex, lhs, op.binding_power().0, |t| {
+                t == &Token::QuestionMark
+            })?
+        } else {
+            self.parse_expression(lex, op.binding_power().1)?
+        };
         if op == BinaryPlaceOperator::ArrayAccess {
             if !matches!(place, Place::Variable(_)) {
                 return Err(ParsingError::OperatorExpectsVariable(lex.span()));
@@ -218,6 +255,9 @@ impl<'a, 'b> Pratt<'a, 'b> {
     }
 
     fn parse_ternary(&mut self, lex: &mut Lexer<'a>, lhs: Expr<'a>) -> Result<Expr<'a>> {
+        // There should be no need to typecheck lhs since there is no way it
+        // wasn't caught first, but checking is cheap, so we make sure.
+        self.typecheck(lex, &lhs)?;
         let right_bp = Ternary.binding_power().1;
         lex.next();
         let then_branch = self.parse_expression(lex, right_bp)?;
@@ -260,5 +300,13 @@ impl<'a, 'b> Pratt<'a, 'b> {
 
     pub fn parse_redirection(&mut self, lex: &mut Lexer<'a>) -> Result<Expr<'a>> {
         self.parse_expression(lex, BinaryOperator::Concat.binding_power().1 - 1)
+    }
+
+    fn typecheck(&self, lex: &mut Lexer<'a>, expr: &Expr<'a>) -> Result<()> {
+        if matches!(expr, Expr::Leaf(Atom::TypedRegex(_))) {
+            Err(ParsingError::UnexpectedTypedRegex(lex.span()))
+        } else {
+            Ok(())
+        }
     }
 }

@@ -38,6 +38,7 @@ pub enum Atom<'a> {
     BigInt(),
     BigFloat(),
     Regex(Slice<'a>),
+    TypedRegex(Slice<'a>),
 }
 
 #[derive(Debug)]
@@ -119,8 +120,8 @@ pub enum BinaryOperator {
     GtE,
     And,
     Or,
-    MatchRegex,
-    NotMatchRegex,
+    Matches,
+    MatchesNot,
     Add,
     Subtract,
     Multiply,
@@ -338,8 +339,8 @@ impl<'a> BinaryOperator {
             Token::LesserThan => Ok(Self::Lt),
             Token::GreaterOrEqualThan => Ok(Self::GtE),
             Token::LesserOrEqualThan => Ok(Self::LtE),
-            Token::Matching => Ok(Self::MatchRegex),
-            Token::NotMatching => Ok(Self::NotMatchRegex),
+            Token::Matching => Ok(Self::Matches),
+            Token::NotMatching => Ok(Self::MatchesNot),
             Token::Plus => Ok(Self::Add),
             Token::Minus => Ok(Self::Subtract),
             Token::Star => Ok(Self::Multiply),
@@ -486,7 +487,7 @@ impl BindingPower for BinaryOperator {
             }
             Self::And => binding_powers::BP_AND,
             Self::Or => binding_powers::BP_OR,
-            Self::MatchRegex | Self::NotMatchRegex => binding_powers::BP_MATCH,
+            Self::Matches | Self::MatchesNot => binding_powers::BP_MATCH,
             Self::Add => binding_powers::BP_ADDITION,
             Self::Subtract => binding_powers::BP_ADDITION,
             Self::Multiply => binding_powers::BP_MULTI,
